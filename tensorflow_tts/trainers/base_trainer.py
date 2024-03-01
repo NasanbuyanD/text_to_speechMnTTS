@@ -367,15 +367,15 @@ class GanBasedTrainer(BasedTrainer):
     else:
         return per_replica_losses
 
-def _calculate_generator_gradient_per_batch(self, batch):
-    return self._calculate_gradient_per_batch(
-        batch, self._generator, self._is_generator_mixed_precision
-    )
+    def _calculate_generator_gradient_per_batch(self, batch):
+        return self._calculate_gradient_per_batch(
+            batch, self._generator, self._is_generator_mixed_precision
+        )
 
-def _calculate_discriminator_gradient_per_batch(self, batch):
-    return self._calculate_gradient_per_batch(
-        batch, self._discriminator, self._is_discriminator_mixed_precision
-    )
+    def _calculate_discriminator_gradient_per_batch(self, batch):
+        return self._calculate_gradient_per_batch(
+            batch, self._discriminator, self._is_discriminator_mixed_precision
+        )
 
 
     def _accumulate_gradients(self, model, optimizer, batch, loss_fn):
