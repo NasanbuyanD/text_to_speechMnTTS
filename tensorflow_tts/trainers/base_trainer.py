@@ -475,8 +475,7 @@ def _one_step_forward_per_replica(self, batch):
             per_replica_dis_losses = self._accumulate_gradients(
                 self._discriminator, self._dis_optimizer, batch, self._calculate_discriminator_gradient_per_batch
             )
-
-    return per_replica_gen_losses + per_replica_dis_losses
+return per_replica_gen_losses + per_replica_dis_losses
 
 
     def _eval_epoch(self):
