@@ -340,88 +340,42 @@ class GanBasedTrainer(BasedTrainer):
         dict_metrics_losses = {}
         return per_example_losses, dict_metrics_losses
 
-    def _calculate_generator_gradient_per_batch(self, batch):
-        outputs = self._generator(**batch, training=True)
-        (
-            per_example_losses,
-            dict_metrics_losses,
-        ) = self.compute_per_example_generator_losses(batch, outputs)
-        per_replica_gen_losses = tf.nn.compute_average_loss(
-            per_example_losses,
-            global_batch_size=self.config["batch_size"]
-            * self.get_n_gpus()
-            * self.config["gradient_accumulation_steps"],
-        )
+   def _calculate_gradient_per_batch(self, batch, model, is_mixed_precision):
+    outputs = model(**batch, training=True)
+    per_example_losses, dict_metrics_losses = self.compute_per_example_losses(batch, outputs)
+    per_replica_losses = tf.nn.compute_average_loss(
+        per_example_losses,
+        global_batch_size=self.config["batch_size"]
+        * self.get_n_gpus()
+        * self.config["gradient_accumulation_steps"],
+    )
 
-        if self._is_generator_mixed_precision:
-            scaled_per_replica_gen_losses = self._gen_optimizer.get_scaled_loss(
-                per_replica_gen_losses
-            )
+    if is_mixed_precision:
+        scaled_losses = self._optimizer.get_scaled_loss(per_replica_losses)
+        scaled_gradients = tf.gradients(scaled_losses, model.trainable_variables)
+        gradients = self._optimizer.get_unscaled_gradients(scaled_gradients)
+    else:
+        gradients = tf.gradients(per_replica_losses, model.trainable_variables)
 
-        if self._is_generator_mixed_precision:
-            scaled_gradients = tf.gradients(
-                scaled_per_replica_gen_losses, self._generator.trainable_variables
-            )
-            gradients = self._gen_optimizer.get_unscaled_gradients(scaled_gradients)
-        else:
-            gradients = tf.gradients(
-                per_replica_gen_losses, self._generator.trainable_variables
-            )
+    if self.config["gradient_accumulation_steps"] > 1:
+        model.gradient_accumulator(gradients)
 
-        # gradient accumulate for generator here
-        if self.config["gradient_accumulation_steps"] > 1:
-            self._generator_gradient_accumulator(gradients)
+    self.update_train_metrics(dict_metrics_losses)
 
-        # accumulate loss into metrics
-        self.update_train_metrics(dict_metrics_losses)
+    if self.config["gradient_accumulation_steps"] == 1:
+        return gradients, per_replica_losses
+    else:
+        return per_replica_losses
 
-        if self.config["gradient_accumulation_steps"] == 1:
-            return gradients, per_replica_gen_losses
-        else:
-            return per_replica_gen_losses
+def _calculate_generator_gradient_per_batch(self, batch):
+    return self._calculate_gradient_per_batch(
+        batch, self._generator, self._is_generator_mixed_precision
+    )
 
-    def _calculate_discriminator_gradient_per_batch(self, batch):
-        (
-            per_example_losses,
-            dict_metrics_losses,
-        ) = self.compute_per_example_discriminator_losses(
-            batch, self._generator(**batch, training=True)
-        )
-
-        per_replica_dis_losses = tf.nn.compute_average_loss(
-            per_example_losses,
-            global_batch_size=self.config["batch_size"]
-            * self.get_n_gpus()
-            * self.config["gradient_accumulation_steps"],
-        )
-
-        if self._is_discriminator_mixed_precision:
-            scaled_per_replica_dis_losses = self._dis_optimizer.get_scaled_loss(
-                per_replica_dis_losses
-            )
-
-        if self._is_discriminator_mixed_precision:
-            scaled_gradients = tf.gradients(
-                scaled_per_replica_dis_losses,
-                self._discriminator.trainable_variables,
-            )
-            gradients = self._dis_optimizer.get_unscaled_gradients(scaled_gradients)
-        else:
-            gradients = tf.gradients(
-                per_replica_dis_losses, self._discriminator.trainable_variables
-            )
-
-        # accumulate loss into metrics
-        self.update_train_metrics(dict_metrics_losses)
-
-        # gradient accumulate for discriminator here
-        if self.config["gradient_accumulation_steps"] > 1:
-            self._discriminator_gradient_accumulator(gradients)
-
-        if self.config["gradient_accumulation_steps"] == 1:
-            return gradients, per_replica_dis_losses
-        else:
-            return per_replica_dis_losses
+def _calculate_discriminator_gradient_per_batch(self, batch):
+    return self._calculate_gradient_per_batch(
+        batch, self._discriminator, self._is_discriminator_mixed_precision
+    )
 
 
     def _accumulate_gradients(self, model, optimizer, batch, loss_fn):
