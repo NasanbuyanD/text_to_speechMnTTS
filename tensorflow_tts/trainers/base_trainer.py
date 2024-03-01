@@ -424,82 +424,60 @@ class GanBasedTrainer(BasedTrainer):
             return per_replica_dis_losses
 
 
-    def _one_step_forward_per_replica(self, batch):
-        per_replica_gen_losses = 0.0
-        per_replica_dis_losses = 0.0
+    def _accumulate_gradients(self, model, optimizer, batch, loss_fn):
+    per_replica_losses = 0.0
+    for i in tf.range(self.config["gradient_accumulation_steps"]):
+        reduced_batch = {
+            k: v[
+                i
+                * self.config["batch_size"] : (i + 1)
+                * self.config["batch_size"]
+            ]
+            for k, v in batch.items()
+        }
+        reduced_batch_losses = loss_fn(reduced_batch)
+        per_replica_losses += reduced_batch_losses
 
+    gradients = model.gradient_accumulator.gradients
+    optimizer.apply_gradients(
+        zip(gradients, model.trainable_variables)
+    )
+    model.gradient_accumulator.reset()
+    return per_replica_losses
+
+def _one_step_forward_per_replica(self, batch):
+    per_replica_gen_losses = 0.0
+    per_replica_dis_losses = 0.0
+
+    if self.config["gradient_accumulation_steps"] == 1:
+        (
+            gradients,
+            per_replica_gen_losses,
+        ) = self._calculate_generator_gradient_per_batch(batch)
+        self._gen_optimizer.apply_gradients(
+            zip(gradients, self._generator.trainable_variables)
+        )
+    else:
+        per_replica_gen_losses = self._accumulate_gradients(
+            self._generator, self._gen_optimizer, batch, self._calculate_generator_gradient_per_batch
+        )
+
+    if self.steps >= self.config["discriminator_train_start_steps"]:
         if self.config["gradient_accumulation_steps"] == 1:
             (
                 gradients,
-                per_replica_gen_losses,
-            ) = self._calculate_generator_gradient_per_batch(batch)
-            self._gen_optimizer.apply_gradients(
-                zip(gradients, self._generator.trainable_variables)
+                per_replica_dis_losses,
+            ) = self._calculate_discriminator_gradient_per_batch(batch)
+            self._dis_optimizer.apply_gradients(
+                zip(gradients, self._discriminator.trainable_variables)
             )
         else:
-            # gradient acummulation here.
-            for i in tf.range(self.config["gradient_accumulation_steps"]):
-                reduced_batch = {
-                    k: v[
-                        i
-                        * self.config["batch_size"] : (i + 1)
-                        * self.config["batch_size"]
-                    ]
-                    for k, v in batch.items()
-                }
-
-                # run 1 step accumulate
-                reduced_batch_losses = self._calculate_generator_gradient_per_batch(
-                    reduced_batch
-                )
-
-                # sum per_replica_losses
-                per_replica_gen_losses += reduced_batch_losses
-
-            gradients = self._generator_gradient_accumulator.gradients
-            self._gen_optimizer.apply_gradients(
-                zip(gradients, self._generator.trainable_variables)
+            per_replica_dis_losses = self._accumulate_gradients(
+                self._discriminator, self._dis_optimizer, batch, self._calculate_discriminator_gradient_per_batch
             )
-            self._generator_gradient_accumulator.reset()
 
-        # one step discriminator
-        # recompute y_hat after 1 step generator for discriminator training.
-        if self.steps >= self.config["discriminator_train_start_steps"]:
-            if self.config["gradient_accumulation_steps"] == 1:
-                (
-                    gradients,
-                    per_replica_dis_losses,
-                ) = self._calculate_discriminator_gradient_per_batch(batch)
-                self._dis_optimizer.apply_gradients(
-                    zip(gradients, self._discriminator.trainable_variables)
-                )
-            else:
-                # gradient acummulation here.
-                for i in tf.range(self.config["gradient_accumulation_steps"]):
-                    reduced_batch = {
-                        k: v[
-                            i
-                            * self.config["batch_size"] : (i + 1)
-                            * self.config["batch_size"]
-                        ]
-                        for k, v in batch.items()
-                    }
+    return per_replica_gen_losses + per_replica_dis_losses
 
-                    # run 1 step accumulate
-                    reduced_batch_losses = (
-                        self._calculate_discriminator_gradient_per_batch(reduced_batch)
-                    )
-
-                    # sum per_replica_losses
-                    per_replica_dis_losses += reduced_batch_losses
-
-                gradients = self._discriminator_gradient_accumulator.gradients
-                self._dis_optimizer.apply_gradients(
-                    zip(gradients, self._discriminator.trainable_variables)
-                )
-                self._discriminator_gradient_accumulator.reset()
-
-        return per_replica_gen_losses + per_replica_dis_losses
 
     def _eval_epoch(self):
         """Evaluate model one epoch."""
